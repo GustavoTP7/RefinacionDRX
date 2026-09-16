@@ -1,244 +1,224 @@
-import streamlit as st
+import os
+import re
+import subprocess
+import shutil
+from pathlib import Path
 import pandas as pd
-import numpy as np
-import xgboost as xgb
-from catboost import CatBoostRegressor
-import shap
-from sklearn.model_selection import KFold, cross_val_predict
-from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error, mean_absolute_percentage_error
-import plotly.express as px
-import plotly.graph_objects as go
-import matplotlib.pyplot as plt
+import streamlit as st
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Metalurgia Control Hub Pro", layout="wide")
+# ==============================================================================
+# CONFIGURACIÓN DE PÁGINA STREAMLIT
+# ==============================================================================
+st.set_page_config(
+    page_title="Geometallurgy XRD Automator",
+    page_icon="⚡",
+    layout="wide"
+)
 
-@st.cache_data
-def cargar_datos(archivo):
+st.title("⚡ Automatizador de Cuantificación Mineralógica (Rietveld + TOPAS)")
+st.markdown(
+    "Procesamiento por lotes de patrones de difracción con exportación a Excel y archivos `.pro` para auditoría."
+)
+
+# ==============================================================================
+# BARRA LATERAL: CONFIGURACIÓN DE RUTAS
+# ==============================================================================
+st.sidebar.header("⚙️ Configuración del Sistema")
+
+topas_exe = st.sidebar.text_input(
+    "Ruta ejecutable TOPAS (tc.exe):",
+    value=r"C:\Bruker\TOPAS6\tc.exe"
+)
+
+dir_libreria = st.sidebar.text_input(
+    "Ruta librería local (.str):",
+    value=r"./libreria_str"
+)
+
+dir_salida = st.sidebar.text_input(
+    "Carpeta de salida de resultados:",
+    value=r"./resultados_procesados"
+)
+
+# Detectar fases disponibles en la librería local
+path_lib = Path(dir_libreria)
+fases_disponibles = []
+if path_lib.exists():
+    fases_disponibles = [f.stem for f in path_lib.glob("*.str")]
+
+# ==============================================================================
+# FUNCIONES NUCLEARES DEL PIPELINE
+# ==============================================================================
+def generar_contenido_inp(ruta_raw: Path, ruta_pro: Path, fases_seleccionadas: list, path_libreria: Path) -> str:
+    """Genera la estructura del archivo .inp para TOPAS."""
+    contenido = f"""
+    ' ==============================================================================
+    ' ARCHIVO DE CONTROL GENERADO AUTOMATICAMENTE POR PYTHON
+    ' ==============================================================================
+    
+    xdd "{ruta_raw.resolve()}"
+    Out_PRO("{ruta_pro.resolve()}")
+    
+    ' Parametros Instrumentales Estandar (Ajustar segun difractometro D8)
+    CuKa1(1.540596)
+    LP_Factor(26.4)
+    Zero_Error(zero_err, 0.0)
+    
+    ' Ajuste de Fondo (Chebyshev)
+    bkg @ 0.0 0.0 0.0 0.0
+    
+    ' Inclusion de Estructuras Cristalinas (.str)
+    """
+    for fase in fases_seleccionadas:
+        path_str = path_libreria / f"{fase}.str"
+        if path_str.exists():
+            contenido += f'\n    #include "{path_str.resolve()}"'
+    
+    return contenido
+
+def ejecutar_topas_muestra(topas_path: str, ruta_raw: Path, ruta_salida_dir: Path, fases: list, path_libreria: Path):
+    """Crea el .inp, invoca a TOPAS tc.exe y retorna la ruta del .out."""
+    nombre_base = ruta_raw.stem
+    ruta_inp = ruta_salida_dir / f"{nombre_base}.inp"
+    ruta_pro = ruta_salida_dir / f"{nombre_base}.pro"
+    ruta_out = ruta_salida_dir / f"{nombre_base}.out"
+
+    # 1. Crear archivo .inp
+    contenido_inp = generar_contenido_inp(ruta_raw, ruta_pro, fases, path_libreria)
+    with open(ruta_inp, "w", encoding="utf-8") as f:
+        f.write(contenido_inp)
+
+    # 2. Validar ejecutable
+    if not os.path.exists(topas_path):
+        return False, ruta_out, f"Ejecutable no encontrado en: {topas_path}"
+
+    # 3. Invocar TOPAS en consola
     try:
-        df = pd.read_csv(archivo) if archivo.name.endswith('.csv') else pd.read_excel(archivo)
-        df.columns = df.columns.astype(str).str.strip()
-        return df
-    except Exception as e:
-        st.error(f"Error al cargar archivo: {e}")
-        return None
-
-st.title("🏭 Centro de Control Metalúrgico: Inteligencia en Tiempo Real")
-
-# --- BARRA LATERAL ---
-with st.sidebar:
-    st.header("1️⃣ Gestión de Datos")
-    archivo = st.file_uploader("Subir dataset (CSV o XLSX)", type=["csv", "xlsx"])
-    modo_datos = st.radio("Filtro de Ruido:", ["Dataset Original", "Sin Outliers (IQR)"])
-    
-    st.header("2️⃣ Configuración del Modelo")
-    tipo_modelo = st.selectbox("Algoritmo de IA:", ["XGBoost", "CatBoost"])
-    n_estimators = st.slider("Número de Árboles:", 50, 500, 100, step=50)
-    learning_rate = st.slider("Tasa de Aprendizaje (LR):", 0.01, 0.3, 0.05, step=0.01)
-
-if archivo is not None:
-    df_raw = cargar_datos(archivo)
-    
-    if df_raw is not None:
-        # Selección de columnas numéricas y eliminación de nulos
-        df_num = df_raw.select_dtypes(include=[np.number]).dropna()
-        
-        # Filtro de Outliers por IQR
-        if modo_datos == "Sin Outliers (IQR)":
-            Q1 = df_num.quantile(0.25)
-            Q3 = df_num.quantile(0.75)
-            IQR = Q3 - Q1
-            df = df_num[~((df_num < (Q1 - 1.5 * IQR)) | (df_num > (Q3 + 1.5 * IQR))).any(axis=1)]
+        cmd = [topas_path, str(ruta_inp)]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if proc.returncode == 0:
+            return True, ruta_out, "OK"
         else:
-            df = df_num.copy()
-            
-        columnas = df.columns.tolist()
+            return False, ruta_out, proc.stderr
+    except Exception as e:
+        return False, ruta_out, str(e)
+
+def parsear_salida_topas(ruta_out: Path, nombre_muestra: str) -> dict:
+    """Parsea el archivo .out generado para extraer Rwp, GOF y % en peso."""
+    resultados = {"Muestra": nombre_muestra, "Rwp": None, "GOF": None, "Estado": "Error"}
+    
+    if not ruta_out.exists():
+        resultados["Estado"] = "Archivo .out no generado"
+        return resultados
+
+    with open(ruta_out, 'r', encoding='utf-8', errors='ignore') as f:
+        texto = f.read()
+
+    # Extracción de Rwp y GOF
+    match_rwp = re.search(r"Rwp\s*=\s*([\d\.]+)", texto)
+    match_gof = re.search(r"GOF\s*=\s*([\d\.]+)", texto)
+
+    if match_rwp: 
+        resultados["Rwp"] = float(match_rwp.group(1))
+    if match_gof: 
+        resultados["GOF"] = float(match_gof.group(1))
+
+    # Extracción de % en peso por fase
+    matches_fases = re.findall(r"phase_name\s+([^\s]+).*?weight_percent\s+([\d\.]+)", texto, re.DOTALL)
+    for fase, peso in matches_fases:
+        resultados[fase] = float(peso)
+
+    # Criterio de validación
+    if resultados["GOF"] is not None:
+        resultados["Estado"] = "OK" if resultados["GOF"] < 2.5 else "Revisar Manualmente"
+
+    return resultados
+
+# ==============================================================================
+# INTERFAZ PRINCIPAL
+# ==============================================================================
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    st.subheader("1. Selección de Paragénesis Mineral")
+    if fases_disponibles:
+        fases_seleccionadas = st.multiselect(
+            "Selecciona las fases a refinar en este lote:",
+            options=fases_disponibles,
+            default=fases_disponibles[:3] if len(fases_disponibles) >= 3 else fases_disponibles
+        )
+    else:
+        st.warning("⚠️ No se encontraron archivos `.str` en la librería indicada.")
+        fases_seleccionadas = []
+
+with col2:
+    st.subheader("2. Carga de Difractogramas")
+    archivos_cargados = st.file_uploader(
+        "Sube tus archivos de muestra (.RAW o .XY):",
+        accept_multiple_files=True,
+        type=["raw", "xy"]
+    )
+
+# ==============================================================================
+# EJECUCIÓN DEL PROCESAMIENTO
+# ==============================================================================
+st.markdown("---")
+
+if st.button("🚀 Ejecutar Cuantificación Automática", type="primary"):
+    if not archivos_cargados:
+        st.error("Debes cargar al menos un archivo de difracción.")
+    elif not fases_seleccionadas:
+        st.error("Debes seleccionar al menos una fase mineral.")
+    else:
+        path_salida = Path(dir_salida)
+        path_salida.mkdir(parents=True, exist_ok=True)
         
-        with st.sidebar:
-            st.header("3️⃣ Variables de Proceso")
-            target = st.selectbox("Variable Objetivo (Y):", columnas, index=len(columnas)-1)
-            features = st.multiselect("Variables Predictoras (X):", [c for c in columnas if c != target], default=[c for c in columnas if c != target])
+        resultados_lote = []
+        progreso = st.progress(0)
+        status = st.empty()
+        
+        for idx, archivo_obj in enumerate(archivos_cargados):
+            status.text(f"Procesando ({idx+1}/{len(archivos_cargados)}): {archivo_obj.name}")
             
-        if features and target:
-            X = df[features]
-            y = df[target]
+            # Guardar archivo de muestra temporalmente
+            ruta_raw_temp = path_salida / archivo_obj.name
+            with open(ruta_raw_temp, "wb") as f:
+                f.write(archivo_obj.getbuffer())
             
-            # Inicialización del modelo según selección
-            if tipo_modelo == "XGBoost":
-                model = xgb.XGBRegressor(n_estimators=n_estimators, learning_rate=learning_rate, random_state=42)
-            else:
-                model = CatBoostRegressor(iterations=n_estimators, learning_rate=learning_rate, random_state=42, verbose=0)
-                
-            # Validación Cruzada (K-Fold K=5)
-            kf = KFold(n_splits=5, shuffle=True, random_state=42)
-            y_pred = cross_val_predict(model, X, y, cv=kf)
+            # Ejecutar refinamiento en TOPAS
+            exito, ruta_out, msg = ejecutar_topas_muestra(
+                topas_exe, ruta_raw_temp, path_salida, fases_seleccionadas, path_lib
+            )
             
-            # Entrenamiento global
-            model.fit(X, y)
+            # Extraer datos del .out
+            res = parsear_salida_topas(ruta_out, ruta_raw_temp.stem)
+            if not exito and res["Estado"] == "Error":
+                res["Estado"] = f"Error: {msg}"
+                
+            resultados_lote.append(res)
+            progreso.progress((idx + 1) / len(archivos_cargados))
             
-            # Cálculo de Métricas (Originales + MAPE)
-            r2 = r2_score(y, y_pred)
-            mae = mean_absolute_error(y, y_pred)
-            rmse = np.sqrt(mean_squared_error(y, y_pred))
-            mape = mean_absolute_percentage_error(y, y_pred) * 100
-            
-            # --- PESTAÑAS PRINCIPALES ---
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                "📈 Tendencias y Correlación", 
-                "🎯 Rendimiento del Modelo", 
-                "🎛️ Simulador Proactivo", 
-                "🚨 Auditoría de Turnos",
-                "🧠 Explicabilidad (SHAP)"
-            ])
-            
-            # --- PESTAÑA 1: TENDENCIAS Y CORRELACIÓN ---
-            with tab1:
-                st.subheader("Análisis Exploratorio de Variables")
-                col_scatter, col_corr = st.columns(2)
-                
-                with col_scatter:
-                    var_x = st.selectbox("Variable para Scatter Plot vs " + target, features)
-                    fig_disp = px.scatter(df, x=var_x, y=target, trendline="ols", 
-                                          title=f"Relación entre {var_x} y {target}")
-                    st.plotly_chart(fig_disp, use_container_width=True)
-                    
-                with col_corr:
-                    st.subheader("Matriz de Correlación (Heatmap)")
-                    corr_matrix = df[[target] + features].corr()
-                    fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r",
-                                         title="Correlación entre Variables")
-                    st.plotly_chart(fig_corr, use_container_width=True)
-
-            # --- PESTAÑA 2: RENDIMIENTO DEL MODELO ---
-            with tab2:
-                st.subheader(f"Métricas de Desempeño ({tipo_modelo})")
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("R² Score", f"{r2:.3f}")
-                m2.metric("MAE (Error Absoluto)", f"{mae:.3f}")
-                m3.metric("RMSE (Riesgo)", f"{rmse:.3f}")
-                m4.metric("MAPE (Error %)", f"{mape:.2f}%")
-                
-                col_real_pred, col_imp = st.columns(2)
-                with col_real_pred:
-                    fig_rp = px.scatter(x=y, y=y_pred, labels={'x': 'Valores Reales', 'y': 'Valores Predichos'},
-                                        title="Real vs Predicho")
-                    fig_rp.add_shape(type="line", x0=y.min(), y0=y.min(), x1=y.max(), y1=y.max(),
-                                    line=dict(color="Red", dash="dash"))
-                    st.plotly_chart(fig_rp, use_container_width=True)
-                    
-                with col_imp:
-                    if tipo_modelo == "XGBoost":
-                        importances = model.feature_importances_
-                    else:
-                        importances = model.get_feature_importance()
-                        
-                    df_imp = pd.DataFrame({'Variable': features, 'Importancia': importances}).sort_values('Importancia', ascending=True)
-                    fig_imp = px.bar(df_imp, x='Importancia', y='Variable', orientation='h', 
-                                     title="Importancia Relativa de Variables")
-                    st.plotly_chart(fig_imp, use_container_width=True)
-
-            # --- PESTAÑA 3: SIMULADOR PROACTIVO ---
-            with tab3:
-                st.subheader("Simulación Operativa en Tiempo Real")
-                st.markdown("Ajuste los parámetros operativos para predecir el impacto en la variable objetivo:")
-                
-                inputs_sim = {}
-                cols_sim = st.columns(3)
-                for idx, col_name in enumerate(features):
-                    min_val = float(df[col_name].min())
-                    max_val = float(df[col_name].max())
-                    mean_val = float(df[col_name].mean())
-                    
-                    with cols_sim[idx % 3]:
-                        inputs_sim[col_name] = st.slider(f"{col_name}:", min_val, max_val, mean_val)
-                        
-                df_sim_input = pd.DataFrame([inputs_sim])
-                pred_simulada = model.predict(df_sim_input)[0]
-                
-                st.divider()
-                col_res_sim, col_gauge = st.columns([1, 2])
-                
-                with col_res_sim:
-                    st.markdown("### Resultado de la Predicción")
-                    st.metric(label=f"{target} Predicho", value=f"{pred_simulada:.2f}")
-                    
-                    media_target = y.mean()
-                    if pred_simulada < (media_target - mae):
-                        st.warning("⚠️ **Atención:** La predicción está por debajo del promedio histórico esperado.")
-                    elif pred_simulada >= media_target:
-                        st.success("✅ **Operación Óptima:** La predicción supera el promedio histórico.")
-
-                with col_gauge:
-                    fig_gauge = go.Figure(go.Indicator(
-                        mode="gauge+number",
-                        value=pred_simulada,
-                        title={'text': f"Indicador: {target}"},
-                        gauge={
-                            'axis': {'range': [y.min(), y.max()]},
-                            'bar': {'color': "navy"},
-                            'steps': [
-                                {'range': [y.min(), media_target - mae], 'color': "#FF4B4B"},
-                                {'range': [media_target - mae, media_target + mae], 'color': "#FFA500"},
-                                {'range': [media_target + mae, y.max()], 'color': "#00CC96"}
-                            ],
-                            'threshold': {
-                                'line': {'color': "black", 'width': 4},
-                                'thickness': 0.75,
-                                'value': media_target
-                            }
-                        }
-                    ))
-                    st.plotly_chart(fig_gauge, use_container_width=True)
-
-            # --- PESTAÑA 4: AUDITORÍA DE TURNOS ---
-            with tab4:
-                st.subheader("Auditoría de Desviaciones por Turno / Muestra")
-                
-                df_audit = df.copy()
-                df_audit['Predicho'] = y_pred
-                df_audit['Error_Absoluto'] = np.abs(df_audit[target] - df_audit['Predicho'])
-                
-                def categorizar_error(err):
-                    if err <= mae:
-                        return "🟢 Normal"
-                    elif err <= 2 * mae:
-                        return "🟡 Advertencia"
-                    else:
-                        return "🔴 Anomalía"
-                        
-                df_audit['Estado_Semáforo'] = df_audit['Error_Absoluto'].apply(categorizar_error)
-                
-                col_f1, col_f2 = st.columns(2)
-                with col_f1:
-                    filtro_estado = st.multiselect("Filtrar por Estado de Auditoría:", 
-                                                   ["🟢 Normal", "🟡 Advertencia", "🔴 Anomalía"],
-                                                   default=["🟢 Normal", "🟡 Advertencia", "🔴 Anomalía"])
-                
-                df_audit_filtrado = df_audit[df_audit['Estado_Semáforo'].isin(filtro_estado)]
-                
-                st.dataframe(df_audit_filtrado[[target, 'Predicho', 'Error_Absoluto', 'Estado_Semáforo'] + features], 
-                             use_container_width=True)
-                
-                fig_err = px.scatter(df_audit, x=df_audit.index, y='Error_Absoluto', color='Estado_Semáforo',
-                                     color_discrete_map={"🟢 Normal": "green", "🟡 Advertencia": "orange", "🔴 Anomalía": "red"},
-                                     title="Límites de Control de Error (MAE)")
-                fig_err.add_hline(y=mae, line_dash="dash", line_color="orange", annotation_text="1x MAE")
-                fig_err.add_hline(y=2*mae, line_dash="dash", line_color="red", annotation_text="2x MAE")
-                st.plotly_chart(fig_err, use_container_width=True)
-
-            # --- PESTAÑA 5: EXPLICABILIDAD SHAP ---
-            with tab5:
-                st.subheader("Análisis de Explicabilidad con SHAP")
-                st.markdown("Muestra la contribución e impacto directo de cada variable en el comportamiento global del modelo:")
-                try:
-                    explainer = shap.Explainer(model, X)
-                    shap_values = explainer(X)
-                    
-                    fig_shap, ax = plt.subplots(figsize=(10, 5))
-                    shap.summary_plot(shap_values, X, show=False)
-                    st.pyplot(fig_shap)
-                except Exception as e:
-                    st.warning(f"No se pudo generar el gráfico SHAP completo: {e}")
-
-else:
-    st.info("👈 Por favor, suba un archivo CSV o XLSX en la barra lateral para comenzar.")
+        status.success("¡Procesamiento por lote completado!")
+        
+        # --- TABLA DE RESULTADOS ---
+        df_resultados = pd.DataFrame(resultados_lote)
+        st.subheader("Resumen Cuantitativo (% en peso)")
+        
+        # Resaltar en rosa muestras con GOF > 2.5
+        st.dataframe(
+            df_resultados.style.highlight_between(
+                left=2.5, right=100, subset=['GOF'], color='#ffcdd2'
+            )
+        )
+        
+        # Exportación a Excel
+        excel_salida = path_salida / "Reporte_Cuantificacion.xlsx"
+        df_resultados.to_excel(excel_salida, index=False)
+        
+        with open(excel_salida, "rb") as f:
+            st.download_button(
+                label="📥 Descargar Reporte Consolidado en Excel",
+                data=f,
+                file_name="Reporte_Cuantificacion_XRD.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
