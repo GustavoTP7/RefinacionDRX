@@ -5,9 +5,6 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-# ==============================================================================
-# CONFIGURACIÓN DE PÁGINA STREAMLIT
-# ==============================================================================
 st.set_page_config(
     page_title="Geometallurgy XRD Automator",
     page_icon="⚡",
@@ -15,13 +12,8 @@ st.set_page_config(
 )
 
 st.title("⚡ Automatizador de Cuantificación Mineralógica (Rietveld + TOPAS)")
-st.markdown(
-    "Procesamiento por lotes de patrones de difracción con exportación a Excel y archivos `.pro` para auditoría."
-)
+st.markdown("Procesamiento por lotes de patrones de difracción con exportación a Excel.")
 
-# ==============================================================================
-# BARRA LATERAL: ENTRADA DIRECTA DE RUTAS
-# ==============================================================================
 st.sidebar.header("⚙️ Configuración del Sistema")
 
 topas_exe_input = st.sidebar.text_input(
@@ -39,28 +31,30 @@ dir_salida_input = st.sidebar.text_input(
     value=r"C:\DRX\Resultados"
 )
 
-# NORMALIZACIÓN DE RUTAS PARA WINDOWS
 topas_exe = os.path.normpath(topas_exe_input.strip('"').strip("'"))
 dir_libreria = os.path.normpath(dir_libreria_input.strip('"').strip("'"))
 dir_salida = os.path.normpath(dir_salida_input.strip('"').strip("'"))
 
-# ==============================================================================
-# DETECCIÓN DIRECTA Y ROBUSTA EN DISCO
-# ==============================================================================
-dict_fases = {}
-path_lib = Path(dir_libreria)
+# DEPURACIÓN EN BARRA LATERAL
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔍 Diagnóstico de Rutas")
+st.sidebar.write(f"**Librería existe:** {os.path.exists(dir_libreria)}")
 
+dict_fases = {}
 if os.path.exists(dir_libreria):
-    for archivo in os.listdir(dir_libreria):
-        if archivo.lower().endswith(('.str', '.cif')):
-            nombre_fase = os.path.splitext(archivo)[0]
-            dict_fases[nombre_fase] = os.path.join(dir_libreria, archivo)
+    try:
+        archivos = os.listdir(dir_libreria)
+        st.sidebar.write(f"**Archivos totales:** {len(archivos)}")
+        for archivo in archivos:
+            if archivo.lower().endswith(('.str', '.cif')):
+                nombre_fase = os.path.splitext(archivo)[0]
+                dict_fases[nombre_fase] = os.path.join(dir_libreria, archivo)
+    except Exception as e:
+        st.sidebar.error(f"Error al leer carpeta: {e}")
 
 fases_disponibles = sorted(list(dict_fases.keys()))
+st.sidebar.write(f"**Fases detectadas:** {len(fases_disponibles)}")
 
-# ==============================================================================
-# FUNCIONES NUCLEARES DEL PIPELINE
-# ==============================================================================
 def generar_contenido_inp(ruta_raw: Path, ruta_pro: Path, fases_seleccionadas: list, mapa_fases: dict) -> str:
     includes = []
     for f in fases_seleccionadas:
@@ -70,25 +64,14 @@ def generar_contenido_inp(ruta_raw: Path, ruta_pro: Path, fases_seleccionadas: l
     
     inc_text = "\n".join(includes)
     
-    return f"""
-    ' ==============================================================================
-    ' ARCHIVO DE CONTROL GENERADO AUTOMATICAMENTE POR PYTHON
-    ' ==============================================================================
-    
-    xdd "{ruta_raw.resolve()}"
-    Out_PRO("{ruta_pro.resolve()}")
-    
-    ' Parametros Instrumentales Estandar
-    CuKa1(1.540596)
-    LP_Factor(26.4)
-    Zero_Error(zero_err, 0.0)
-    
-    ' Ajuste de Fondo (Chebyshev)
-    bkg @ 0.0 0.0 0.0 0.0
-    
-    ' Inclusion de Estructuras Cristalinas (.str / .cif)
+    return f"""xdd "{ruta_raw.resolve()}"
+Out_PRO("{ruta_pro.resolve()}")
+CuKa1(1.540596)
+LP_Factor(26.4)
+Zero_Error(zero_err, 0.0)
+bkg @ 0.0 0.0 0.0 0.0
 {inc_text}
-    """
+"""
 
 def ejecutar_topas_muestra(topas_path: str, ruta_raw: Path, ruta_salida_dir: Path, fases: list, mapa_fases: dict):
     nombre_base = ruta_raw.stem
@@ -106,16 +89,12 @@ def ejecutar_topas_muestra(topas_path: str, ruta_raw: Path, ruta_salida_dir: Pat
     try:
         cmd = [topas_path, str(ruta_inp)]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if proc.returncode == 0:
-            return True, ruta_out, "OK"
-        else:
-            return False, ruta_out, proc.stderr
+        return (True, ruta_out, "OK") if proc.returncode == 0 else (False, ruta_out, proc.stderr)
     except Exception as e:
         return False, ruta_out, str(e)
 
 def parsear_salida_topas(ruta_out: Path, nombre_muestra: str) -> dict:
     resultados = {"Muestra": nombre_muestra, "Rwp": None, "GOF": None, "Estado": "Error"}
-    
     if not ruta_out.exists():
         resultados["Estado"] = "Archivo .out no generado"
         return resultados
@@ -126,10 +105,8 @@ def parsear_salida_topas(ruta_out: Path, nombre_muestra: str) -> dict:
     match_rwp = re.search(r"Rwp\s*=\s*([\d\.]+)", texto)
     match_gof = re.search(r"GOF\s*=\s*([\d\.]+)", texto)
 
-    if match_rwp: 
-        resultados["Rwp"] = float(match_rwp.group(1))
-    if match_gof: 
-        resultados["GOF"] = float(match_gof.group(1))
+    if match_rwp: resultados["Rwp"] = float(match_rwp.group(1))
+    if match_gof: resultados["GOF"] = float(match_gof.group(1))
 
     matches_fases = re.findall(r"phase_name\s+([^\s]+).*?weight_percent\s+([\d\.]+)", texto, re.DOTALL)
     for fase, peso in matches_fases:
@@ -140,16 +117,13 @@ def parsear_salida_topas(ruta_out: Path, nombre_muestra: str) -> dict:
 
     return resultados
 
-# ==============================================================================
-# INTERFAZ PRINCIPAL
-# ==============================================================================
 col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("1. Selección de Paragénesis Mineral")
     if fases_disponibles:
         fases_seleccionadas = st.multiselect(
-            f"Selecciona las fases a refinar ({len(fases_disponibles)} detectadas en librería):",
+            f"Selecciona las fases a refinar ({len(fases_disponibles)} detectadas):",
             options=fases_disponibles,
             default=fases_disponibles[:3] if len(fases_disponibles) >= 3 else fases_disponibles
         )
@@ -165,9 +139,6 @@ with col2:
         type=["raw", "xy"]
     )
 
-# ==============================================================================
-# EJECUCIÓN DEL PROCESAMIENTO
-# ==============================================================================
 st.markdown("---")
 
 if st.button("🚀 Ejecutar Cuantificación Automática", type="primary"):
@@ -202,15 +173,9 @@ if st.button("🚀 Ejecutar Cuantificación Automática", type="primary"):
             progreso.progress((idx + 1) / len(archivos_cargados))
             
         status.success("¡Procesamiento por lote completado!")
-        
         df_resultados = pd.DataFrame(resultados_lote)
         st.subheader("Resumen Cuantitativo (% en peso)")
-        
-        st.dataframe(
-            df_resultados.style.highlight_between(
-                left=2.5, right=100, subset=['GOF'], color='#ffcdd2'
-            )
-        )
+        st.dataframe(df_resultados)
         
         excel_salida = path_salida / "Reporte_Cuantificacion.xlsx"
         df_resultados.to_excel(excel_salida, index=False)
