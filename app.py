@@ -4,6 +4,8 @@ import subprocess
 from pathlib import Path
 import pandas as pd
 import streamlit as st
+import tkinter as tk
+from tkinter import filedialog
 
 st.set_page_config(
     page_title="Geometallurgy XRD Automator",
@@ -16,6 +18,17 @@ st.markdown("Procesamiento por lotes de patrones de difracción con exportación
 
 st.sidebar.header("⚙️ Configuración del Sistema")
 
+# Botón interactivo para seleccionar la carpeta si la ruta manual falla
+if st.sidebar.button("📁 Seleccionar carpeta de librería"):
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    folder_selected = filedialog.askdirectory()
+    if folder_selected:
+        st.session_state["ruta_libreria"] = folder_selected
+
+ruta_defecto = st.session_state.get("ruta_libreria", r"C:\DRX\Estructuras")
+
 topas_exe_input = st.sidebar.text_input(
     "1. Ruta ejecutable TOPAS (tc.exe):",
     value=r"C:\TOPAS5\tc.exe"
@@ -23,7 +36,7 @@ topas_exe_input = st.sidebar.text_input(
 
 dir_libreria_input = st.sidebar.text_input(
     "2. Ruta librería local (.str / .cif):",
-    value=r"C:\DRX\Estructuras"
+    value=ruta_defecto
 )
 
 dir_salida_input = st.sidebar.text_input(
@@ -31,7 +44,6 @@ dir_salida_input = st.sidebar.text_input(
     value=r"C:\DRX\Resultados"
 )
 
-# Convertir a objetos Path directamente
 path_topas = Path(topas_exe_input.strip('"').strip("'"))
 path_libreria = Path(dir_libreria_input.strip('"').strip("'"))
 path_salida = Path(dir_salida_input.strip('"').strip("'"))
@@ -43,7 +55,6 @@ st.sidebar.write(f"**Librería existe:** {path_libreria.exists()}")
 dict_fases = {}
 if path_libreria.exists():
     try:
-        # Búsqueda insensible a mayúsculas/minúsculas usando iterdir
         archivos = [f for f in path_libreria.iterdir() if f.suffix.lower() in ['.str', '.cif']]
         st.sidebar.write(f"**Archivos .str / .cif:** {len(archivos)}")
         for f in archivos:
