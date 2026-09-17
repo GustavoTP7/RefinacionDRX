@@ -4,8 +4,6 @@ import subprocess
 from pathlib import Path
 import pandas as pd
 import streamlit as st
-import tkinter as tk
-from tkinter import filedialog
 
 st.set_page_config(
     page_title="Geometallurgy XRD Automator",
@@ -18,17 +16,6 @@ st.markdown("Procesamiento por lotes de patrones de difracción con exportación
 
 st.sidebar.header("⚙️ Configuración del Sistema")
 
-# Botón interactivo para seleccionar la carpeta si la ruta manual falla
-if st.sidebar.button("📁 Seleccionar carpeta de librería"):
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-    folder_selected = filedialog.askdirectory()
-    if folder_selected:
-        st.session_state["ruta_libreria"] = folder_selected
-
-ruta_defecto = st.session_state.get("ruta_libreria", r"C:\DRX\Estructuras")
-
 topas_exe_input = st.sidebar.text_input(
     "1. Ruta ejecutable TOPAS (tc.exe):",
     value=r"C:\TOPAS5\tc.exe"
@@ -36,7 +23,7 @@ topas_exe_input = st.sidebar.text_input(
 
 dir_libreria_input = st.sidebar.text_input(
     "2. Ruta librería local (.str / .cif):",
-    value=ruta_defecto
+    value=r"C:\DRX\Estructuras"
 )
 
 dir_salida_input = st.sidebar.text_input(
@@ -60,9 +47,9 @@ if path_libreria.exists():
         for f in archivos:
             dict_fases[f.stem] = str(f.resolve())
     except Exception as e:
-        st.sidebar.error(f"Error: {e}")
+        st.sidebar.error(f"Error al leer carpeta: {e}")
 else:
-    st.sidebar.error("⚠️ La ruta ingresada no existe en el disco.")
+    st.sidebar.error("⚠️ La ruta no existe en el sistema local del servidor.")
 
 fases_disponibles = sorted(list(dict_fases.keys()))
 
@@ -134,7 +121,7 @@ with col1:
             default=fases_disponibles[:3] if len(fases_disponibles) >= 3 else fases_disponibles
         )
     else:
-        st.warning(f"⚠️ No se encontraron archivos `.str` ni `.cif` en la ruta: `{path_libreria}`")
+        st.warning(f"⚠️ No se encontraron archivos `.str` ni `.cif` en la ruta especificada.")
         fases_seleccionadas = []
 
 with col2:
