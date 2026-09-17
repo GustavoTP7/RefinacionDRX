@@ -14,6 +14,9 @@ st.set_page_config(
 st.title("⚡ Automatizador de Cuantificación Mineralógica (Rietveld + TOPAS)")
 st.markdown("Procesamiento por lotes de patrones de difracción con exportación a Excel.")
 
+# ==============================================================================
+# BARRA LATERAL: CONFIGURACIÓN
+# ==============================================================================
 st.sidebar.header("⚙️ Configuración del Sistema")
 
 topas_exe_input = st.sidebar.text_input(
@@ -21,40 +24,23 @@ topas_exe_input = st.sidebar.text_input(
     value=r"C:\TOPAS5\tc.exe"
 )
 
-dir_libreria_input = st.sidebar.text_input(
-    "2. Ruta librería local (.str / .cif):",
-    value=r"C:\DRX\Estructuras"
-)
-
 dir_salida_input = st.sidebar.text_input(
-    "3. Carpeta de salida de resultados:",
+    "2. Carpeta de trabajo / salida local:",
     value=r"C:\DRX\Resultados"
 )
 
 path_topas = Path(topas_exe_input.strip('"').strip("'"))
-path_libreria = Path(dir_libreria_input.strip('"').strip("'"))
 path_salida = Path(dir_salida_input.strip('"').strip("'"))
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🔍 Diagnóstico de Rutas")
-st.sidebar.write(f"**Librería existe:** {path_libreria.exists()}")
+st.sidebar.subheader("🔍 Diagnóstico")
+st.sidebar.write(f"**TOPAS ejecutable detectado:** {path_topas.exists()}")
 
-dict_fases = {}
-if path_libreria.exists():
-    try:
-        archivos = [f for f in path_libreria.iterdir() if f.suffix.lower() in ['.str', '.cif']]
-        st.sidebar.write(f"**Archivos .str / .cif:** {len(archivos)}")
-        for f in archivos:
-            dict_fases[f.stem] = str(f.resolve())
-    except Exception as e:
-        st.sidebar.error(f"Error al leer carpeta: {e}")
-else:
-    st.sidebar.error("⚠️ La ruta no existe en el sistema local del servidor.")
-
-fases_disponibles = sorted(list(dict_fases.keys()))
-
-def generar_contenido_inp(ruta_raw: Path, ruta_pro: Path, fases_seleccionadas: list, mapa_fases: dict) -> str:
-    includes = [f'    #include "{mapa_fases[f]}"' for f in fases_seleccionadas if f in mapa_fases]
+# ==============================================================================
+# FUNCIONES
+# ==============================================================================
+def generar_contenido_inp(ruta_raw: Path, ruta_pro: Path, mapa_estructuras: dict) -> str:
+    includes = [f'    #include "{path_str}"' for path_str in mapa_estructuras.values()]
     inc_text = "\n".join(includes)
     
     return f"""xdd "{ruta_raw.resolve()}"
@@ -66,13 +52,13 @@ bkg @ 0.0 0.0 0.0 0.0
 {inc_text}
 """
 
-def ejecutar_topas_muestra(topas_path: Path, ruta_raw: Path, ruta_salida_dir: Path, fases: list, mapa_fases: dict):
+def ejecutar_topas_muestra(topas_path: Path, ruta_raw: Path, ruta_salida_dir: Path, mapa_estructuras: dict):
     nombre_base = ruta_raw.stem
     ruta_inp = ruta_salida_dir / f"{nombre_base}.inp"
     ruta_pro = ruta_salida_dir / f"{nombre_base}.pro"
     ruta_out = ruta_salida_dir / f"{nombre_base}.out"
 
-    contenido_inp = generar_contenido_inp(ruta_raw, ruta_pro, fases, mapa_fases)
+    contenido_inp = generar_contenido_inp(ruta_raw, ruta_pro, mapa_estructuras)
     with open(ruta_inp, "w", encoding="utf-8") as f:
         f.write(contenido_inp)
 
@@ -110,50 +96,63 @@ def parsear_salida_topas(ruta_out: Path, nombre_muestra: str) -> dict:
 
     return resultados
 
-col1, col2 = st.columns([1, 1])
+# ==============================================================================
+# INTERFAZ PRINCIPAL DE CARGA
+# ==============================================================================
+col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("1. Selección de Paragénesis Mineral")
-    if fases_disponibles:
-        fases_seleccionadas = st.multiselect(
-            f"Selecciona las fases a refinar ({len(fases_disponibles)} detectadas):",
-            options=fases_disponibles,
-            default=fases_disponibles[:3] if len(fases_disponibles) >= 3 else fases_disponibles
-        )
-    else:
-        st.warning(f"⚠️ No se encontraron archivos `.str` ni `.cif` en la ruta especificada.")
-        fases_seleccionadas = []
+    st.subheader("1. Carga de Estructuras (.STR / .CIF)")
+    estructuras_cargadas = st.file_uploader(
+        "Sube los archivos de tu librería mineralógica:",
+        accept_multiple_files=True,
+        type=["str", "cif"],
+        key="uploader_estructuras"
+    )
 
 with col2:
-    st.subheader("2. Carga de Difractogramas")
-    archivos_cargados = st.file_uploader(
-        "Sube tus archivos de muestra (.RAW o .XY):",
+    st.subheader("2. Carga de Difractogramas (.RAW / .XY)")
+    muestras_cargadas = st.file_uploader(
+        "Sube tus archivos de muestra:",
         accept_multiple_files=True,
-        type=["raw", "xy"]
+        type=["raw", "xy"],
+        key="uploader_muestras"
     )
 
 st.markdown("---")
 
+# ==============================================================================
+# EJECUCIÓN
+# ==============================================================================
 if st.button("🚀 Ejecutar Cuantificación Automática", type="primary"):
-    if not archivos_cargados:
-        st.error("Debes cargar al menos un archivo de difracción.")
-    elif not fases_seleccionadas:
-        st.error("Debes seleccionar al menos una fase mineral.")
+    if not estructuras_cargadas:
+        st.error("Debes cargar al menos una estructura (.str / .cif).")
+    elif not muestras_cargadas:
+        st.error("Debes cargar al menos un difractograma (.raw / .xy).")
     else:
         path_salida.mkdir(parents=True, exist_ok=True)
+        
+        # Guardar las estructuras cargadas temporalmente en la carpeta de trabajo
+        mapa_estructuras = {}
+        for est_obj in estructuras_cargadas:
+            ruta_est_local = path_salida / est_obj.name
+            with open(ruta_est_local, "wb") as f:
+                f.write(est_obj.getbuffer())
+            mapa_estructuras[Path(est_obj.name).stem] = str(ruta_est_local.resolve())
+
         resultados_lote = []
         progreso = st.progress(0)
         status = st.empty()
         
-        for idx, archivo_obj in enumerate(archivos_cargados):
-            status.text(f"Procesando ({idx+1}/{len(archivos_cargados)}): {archivo_obj.name}")
+        for idx, muestra_obj in enumerate(muestras_cargadas):
+            status.text(f"Procesando ({idx+1}/{len(muestras_cargadas)}): {muestra_obj.name}")
             
-            ruta_raw_temp = path_salida / archivo_obj.name
+            ruta_raw_temp = path_salida / muestra_obj.name
             with open(ruta_raw_temp, "wb") as f:
-                f.write(archivo_obj.getbuffer())
+                f.write(muestra_obj.getbuffer())
             
             exito, ruta_out, msg = ejecutar_topas_muestra(
-                path_topas, ruta_raw_temp, path_salida, fases_seleccionadas, dict_fases
+                path_topas, ruta_raw_temp, path_salida, mapa_estructuras
             )
             
             res = parsear_salida_topas(ruta_out, ruta_raw_temp.stem)
@@ -161,7 +160,7 @@ if st.button("🚀 Ejecutar Cuantificación Automática", type="primary"):
                 res["Estado"] = f"Error: {msg}"
                 
             resultados_lote.append(res)
-            progreso.progress((idx + 1) / len(archivos_cargados))
+            progreso.progress((idx + 1) / len(muestras_cargadas))
             
         status.success("¡Procesamiento por lote completado!")
         df_resultados = pd.DataFrame(resultados_lote)
