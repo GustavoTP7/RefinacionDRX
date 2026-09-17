@@ -24,33 +24,37 @@ st.markdown(
 # ==============================================================================
 st.sidebar.header("⚙️ Configuración del Sistema")
 
-topas_exe = st.sidebar.text_input(
+topas_exe_input = st.sidebar.text_input(
     "1. Ruta ejecutable TOPAS (tc.exe):",
     value=r"C:\TOPAS5\tc.exe"
 )
 
-dir_libreria = st.sidebar.text_input(
+dir_libreria_input = st.sidebar.text_input(
     "2. Ruta librería local (.str / .cif):",
     value=r"C:\DRX\Estructuras"
 )
 
-dir_salida = st.sidebar.text_input(
+dir_salida_input = st.sidebar.text_input(
     "3. Carpeta de salida de resultados:",
     value=r"C:\DRX\Resultados"
 )
 
+# NORMALIZACIÓN DE RUTAS PARA WINDOWS
+topas_exe = os.path.normpath(topas_exe_input.strip('"').strip("'"))
+dir_libreria = os.path.normpath(dir_libreria_input.strip('"').strip("'"))
+dir_salida = os.path.normpath(dir_salida_input.strip('"').strip("'"))
+
 # ==============================================================================
-# DETECCIÓN DE FASES (ROBUSTA PARA NOMBRES CON ESPACIOS Y MAYÚSCULAS)
+# DETECCIÓN DIRECTA Y ROBUSTA EN DISCO
 # ==============================================================================
 dict_fases = {}
 path_lib = Path(dir_libreria)
 
-if path_lib.exists():
-    for root, _, files in os.walk(path_lib):
-        for file in files:
-            if file.lower().endswith(('.str', '.cif')):
-                nombre_sin_ext = os.path.splitext(file)[0]
-                dict_fases[nombre_sin_ext] = Path(root) / file
+if os.path.exists(dir_libreria):
+    for archivo in os.listdir(dir_libreria):
+        if archivo.lower().endswith(('.str', '.cif')):
+            nombre_fase = os.path.splitext(archivo)[0]
+            dict_fases[nombre_fase] = os.path.join(dir_libreria, archivo)
 
 fases_disponibles = sorted(list(dict_fases.keys()))
 
@@ -61,7 +65,7 @@ def generar_contenido_inp(ruta_raw: Path, ruta_pro: Path, fases_seleccionadas: l
     includes = []
     for f in fases_seleccionadas:
         if f in mapa_fases:
-            ruta_absoluta = mapa_fases[f].resolve()
+            ruta_absoluta = mapa_fases[f]
             includes.append(f'    #include "{ruta_absoluta}"')
     
     inc_text = "\n".join(includes)
@@ -150,7 +154,7 @@ with col1:
             default=fases_disponibles[:3] if len(fases_disponibles) >= 3 else fases_disponibles
         )
     else:
-        st.warning(f"⚠️ No se encontraron archivos `.str` ni `.cif` en la ruta: {dir_libreria}")
+        st.warning(f"⚠️ No se encontraron archivos `.str` ni `.cif` en la ruta: `{dir_libreria}`")
         fases_seleccionadas = []
 
 with col2:
