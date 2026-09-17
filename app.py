@@ -40,24 +40,29 @@ dir_salida = st.sidebar.text_input(
 )
 
 # ==============================================================================
-# DETECCIÓN FLEXIBLE DE FASES (MAYÚSCULAS Y MINÚSCULAS)
+# DETECCIÓN DE FASES (ROBUSTA PARA NOMBRES CON ESPACIOS Y MAYÚSCULAS)
 # ==============================================================================
+dict_fases = {}
 path_lib = Path(dir_libreria)
-fases_disponibles = []
 
 if path_lib.exists():
-    archivos_fases = list(path_lib.glob("*.[sS][tT][rR]")) + list(path_lib.glob("*.[cC][iI][fF]"))
-    fases_disponibles = sorted(list({f.stem for f in archivos_fases}))
+    for root, _, files in os.walk(path_lib):
+        for file in files:
+            if file.lower().endswith(('.str', '.cif')):
+                nombre_sin_ext = os.path.splitext(file)[0]
+                dict_fases[nombre_sin_ext] = Path(root) / file
+
+fases_disponibles = sorted(list(dict_fases.keys()))
 
 # ==============================================================================
 # FUNCIONES NUCLEARES DEL PIPELINE
 # ==============================================================================
-def generar_contenido_inp(ruta_raw: Path, ruta_pro: Path, fases_seleccionadas: list, path_libreria: Path) -> str:
+def generar_contenido_inp(ruta_raw: Path, ruta_pro: Path, fases_seleccionadas: list, mapa_fases: dict) -> str:
     includes = []
     for f in fases_seleccionadas:
-        coincidencias = list(path_libreria.glob(f"{f}.*"))
-        if coincidencias:
-            includes.append(f'    #include "{coincidencias[0].resolve()}"')
+        if f in mapa_fases:
+            ruta_absoluta = mapa_fases[f].resolve()
+            includes.append(f'    #include "{ruta_absoluta}"')
     
     inc_text = "\n".join(includes)
     
@@ -81,13 +86,13 @@ def generar_contenido_inp(ruta_raw: Path, ruta_pro: Path, fases_seleccionadas: l
 {inc_text}
     """
 
-def ejecutar_topas_muestra(topas_path: str, ruta_raw: Path, ruta_salida_dir: Path, fases: list, path_libreria: Path):
+def ejecutar_topas_muestra(topas_path: str, ruta_raw: Path, ruta_salida_dir: Path, fases: list, mapa_fases: dict):
     nombre_base = ruta_raw.stem
     ruta_inp = ruta_salida_dir / f"{nombre_base}.inp"
     ruta_pro = ruta_salida_dir / f"{nombre_base}.pro"
     ruta_out = ruta_salida_dir / f"{nombre_base}.out"
 
-    contenido_inp = generar_contenido_inp(ruta_raw, ruta_pro, fases, path_libreria)
+    contenido_inp = generar_contenido_inp(ruta_raw, ruta_pro, fases, mapa_fases)
     with open(ruta_inp, "w", encoding="utf-8") as f:
         f.write(contenido_inp)
 
@@ -182,7 +187,7 @@ if st.button("🚀 Ejecutar Cuantificación Automática", type="primary"):
                 f.write(archivo_obj.getbuffer())
             
             exito, ruta_out, msg = ejecutar_topas_muestra(
-                topas_exe, ruta_raw_temp, path_salida, fases_seleccionadas, path_lib
+                topas_exe, ruta_raw_temp, path_salida, fases_seleccionadas, dict_fases
             )
             
             res = parsear_salida_topas(ruta_out, ruta_raw_temp.stem)
