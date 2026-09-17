@@ -31,37 +31,32 @@ dir_salida_input = st.sidebar.text_input(
     value=r"C:\DRX\Resultados"
 )
 
-topas_exe = os.path.normpath(topas_exe_input.strip('"').strip("'"))
-dir_libreria = os.path.normpath(dir_libreria_input.strip('"').strip("'"))
-dir_salida = os.path.normpath(dir_salida_input.strip('"').strip("'"))
+# Convertir a objetos Path directamente
+path_topas = Path(topas_exe_input.strip('"').strip("'"))
+path_libreria = Path(dir_libreria_input.strip('"').strip("'"))
+path_salida = Path(dir_salida_input.strip('"').strip("'"))
 
-# DEPURACIÓN EN BARRA LATERAL
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔍 Diagnóstico de Rutas")
-st.sidebar.write(f"**Librería existe:** {os.path.exists(dir_libreria)}")
+st.sidebar.write(f"**Librería existe:** {path_libreria.exists()}")
 
 dict_fases = {}
-if os.path.exists(dir_libreria):
+if path_libreria.exists():
     try:
-        archivos = os.listdir(dir_libreria)
-        st.sidebar.write(f"**Archivos totales:** {len(archivos)}")
-        for archivo in archivos:
-            if archivo.lower().endswith(('.str', '.cif')):
-                nombre_fase = os.path.splitext(archivo)[0]
-                dict_fases[nombre_fase] = os.path.join(dir_libreria, archivo)
+        # Búsqueda insensible a mayúsculas/minúsculas usando iterdir
+        archivos = [f for f in path_libreria.iterdir() if f.suffix.lower() in ['.str', '.cif']]
+        st.sidebar.write(f"**Archivos .str / .cif:** {len(archivos)}")
+        for f in archivos:
+            dict_fases[f.stem] = str(f.resolve())
     except Exception as e:
-        st.sidebar.error(f"Error al leer carpeta: {e}")
+        st.sidebar.error(f"Error: {e}")
+else:
+    st.sidebar.error("⚠️ La ruta ingresada no existe en el disco.")
 
 fases_disponibles = sorted(list(dict_fases.keys()))
-st.sidebar.write(f"**Fases detectadas:** {len(fases_disponibles)}")
 
 def generar_contenido_inp(ruta_raw: Path, ruta_pro: Path, fases_seleccionadas: list, mapa_fases: dict) -> str:
-    includes = []
-    for f in fases_seleccionadas:
-        if f in mapa_fases:
-            ruta_absoluta = mapa_fases[f]
-            includes.append(f'    #include "{ruta_absoluta}"')
-    
+    includes = [f'    #include "{mapa_fases[f]}"' for f in fases_seleccionadas if f in mapa_fases]
     inc_text = "\n".join(includes)
     
     return f"""xdd "{ruta_raw.resolve()}"
@@ -73,7 +68,7 @@ bkg @ 0.0 0.0 0.0 0.0
 {inc_text}
 """
 
-def ejecutar_topas_muestra(topas_path: str, ruta_raw: Path, ruta_salida_dir: Path, fases: list, mapa_fases: dict):
+def ejecutar_topas_muestra(topas_path: Path, ruta_raw: Path, ruta_salida_dir: Path, fases: list, mapa_fases: dict):
     nombre_base = ruta_raw.stem
     ruta_inp = ruta_salida_dir / f"{nombre_base}.inp"
     ruta_pro = ruta_salida_dir / f"{nombre_base}.pro"
@@ -83,11 +78,11 @@ def ejecutar_topas_muestra(topas_path: str, ruta_raw: Path, ruta_salida_dir: Pat
     with open(ruta_inp, "w", encoding="utf-8") as f:
         f.write(contenido_inp)
 
-    if not os.path.exists(topas_path):
+    if not topas_path.exists():
         return False, ruta_out, f"Ejecutable no encontrado en: {topas_path}"
 
     try:
-        cmd = [topas_path, str(ruta_inp)]
+        cmd = [str(topas_path), str(ruta_inp)]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         return (True, ruta_out, "OK") if proc.returncode == 0 else (False, ruta_out, proc.stderr)
     except Exception as e:
@@ -128,7 +123,7 @@ with col1:
             default=fases_disponibles[:3] if len(fases_disponibles) >= 3 else fases_disponibles
         )
     else:
-        st.warning(f"⚠️ No se encontraron archivos `.str` ni `.cif` en la ruta: `{dir_libreria}`")
+        st.warning(f"⚠️ No se encontraron archivos `.str` ni `.cif` en la ruta: `{path_libreria}`")
         fases_seleccionadas = []
 
 with col2:
@@ -147,9 +142,7 @@ if st.button("🚀 Ejecutar Cuantificación Automática", type="primary"):
     elif not fases_seleccionadas:
         st.error("Debes seleccionar al menos una fase mineral.")
     else:
-        path_salida = Path(dir_salida)
         path_salida.mkdir(parents=True, exist_ok=True)
-        
         resultados_lote = []
         progreso = st.progress(0)
         status = st.empty()
@@ -162,7 +155,7 @@ if st.button("🚀 Ejecutar Cuantificación Automática", type="primary"):
                 f.write(archivo_obj.getbuffer())
             
             exito, ruta_out, msg = ejecutar_topas_muestra(
-                topas_exe, ruta_raw_temp, path_salida, fases_seleccionadas, dict_fases
+                path_topas, ruta_raw_temp, path_salida, fases_seleccionadas, dict_fases
             )
             
             res = parsear_salida_topas(ruta_out, ruta_raw_temp.stem)
