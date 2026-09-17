@@ -1,18 +1,9 @@
 import os
 import re
 import subprocess
-import shutil
 from pathlib import Path
 import pandas as pd
 import streamlit as st
-
-# Intentar importar tkinter para la ventana nativa de selección de carpetas
-try:
-    import tkinter as tk
-    from tkinter import filedialog
-    HAS_TKINTER = True
-except ImportError:
-    HAS_TKINTER = False
 
 # ==============================================================================
 # CONFIGURACIÓN DE PÁGINA STREAMLIT
@@ -29,112 +20,35 @@ st.markdown(
 )
 
 # ==============================================================================
-# GESTIÓN DE ESTADO DE RUTAS (SESSION STATE)
-# ==============================================================================
-if "topas_exe" not in st.session_state:
-    st.session_state["topas_exe"] = r"C:\Bruker\TOPAS6\tc.exe"
-
-if "dir_libreria" not in st.session_state:
-    st.session_state["dir_libreria"] = r"C:\DRX\Estructuras"
-
-if "dir_salida" not in st.session_state:
-    st.session_state["dir_salida"] = r"C:\DRX\Resultados"
-
-def seleccionar_carpeta(key_state):
-    """Abre un explorador de archivos nativo de Windows para seleccionar carpeta."""
-    if HAS_TKINTER:
-        root = tk.Tk()
-        root.withdraw()
-        root.wm_attributes('-topmost', 1)  # Mantiene la ventana al frente
-        folder = filedialog.askdirectory(master=root)
-        root.destroy()
-        if folder:
-            st.session_state[key_state] = os.path.normpath(folder)
-
-def seleccionar_archivo_exe(key_state):
-    """Abre un explorador de archivos nativo para seleccionar el ejecutable tc.exe."""
-    if HAS_TKINTER:
-        root = tk.Tk()
-        root.withdraw()
-        root.wm_attributes('-topmost', 1)  # Mantiene la ventana al frente
-        file_path = filedialog.askopenfilename(
-            master=root,
-            title="Seleccionar ejecutable TOPAS (tc.exe)",
-            filetypes=[("Ejecutable TOPAS", "tc.exe"), ("Todos los ejecutables", "*.exe")]
-        )
-        root.destroy()
-        if file_path:
-            st.session_state[key_state] = os.path.normpath(file_path)
-
-# ==============================================================================
-# BARRA LATERAL: CONFIGURACIÓN DE RUTAS Y BOTONES DE NAVEGACIÓN
+# BARRA LATERAL: ENTRADA DIRECTA DE RUTAS DE TEXTO
 # ==============================================================================
 st.sidebar.header("⚙️ Configuración del Sistema")
 
-# 1. Ruta TOPAS (tc.exe)
-st.sidebar.subheader("1. Ejecutable TOPAS (tc.exe)")
-col_exe1, col_exe2 = st.sidebar.columns([3, 1])
-with col_exe1:
-    topas_exe_input = st.text_input(
-        "Ejecutable:",
-        value=st.session_state["topas_exe"],
-        key="topas_input",
-        label_visibility="collapsed"
-    )
-    st.session_state["topas_exe"] = topas_exe_input
-with col_exe2:
-    if st.button("📁", key="btn_topas", help="Buscar tc.exe"):
-        seleccionar_archivo_exe("topas_exe")
-        st.rerun()
+topas_exe = st.sidebar.text_input(
+    "1. Ruta ejecutable TOPAS (tc.exe):",
+    value=r"C:\Bruker\TOPAS6\tc.exe"
+)
 
-# 2. Ruta Librería (.str)
-st.sidebar.subheader("2. Librería de Estructuras (.str)")
-col_lib1, col_lib2 = st.sidebar.columns([3, 1])
-with col_lib1:
-    dir_lib_input = st.text_input(
-        "Librería:",
-        value=st.session_state["dir_libreria"],
-        key="lib_input",
-        label_visibility="collapsed"
-    )
-    st.session_state["dir_libreria"] = dir_lib_input
-with col_lib2:
-    if st.button("📁", key="btn_lib", help="Seleccionar carpeta de estructuras"):
-        seleccionar_carpeta("dir_libreria")
-        st.rerun()
+dir_libreria = st.sidebar.text_input(
+    "2. Ruta librería local (.str / .cif):",
+    value=r"C:\DRX\Estructuras"
+)
 
-# 3. Ruta Resultados
-st.sidebar.subheader("3. Carpeta de Salida")
-col_out1, col_out2 = st.sidebar.columns([3, 1])
-with col_out1:
-    dir_salida_input = st.text_input(
-        "Salida:",
-        value=st.session_state["dir_salida"],
-        key="salida_input",
-        label_visibility="collapsed"
-    )
-    st.session_state["dir_salida"] = dir_salida_input
-with col_out2:
-    if st.button("📁", key="btn_salida", help="Seleccionar carpeta de resultados"):
-        seleccionar_carpeta("dir_salida")
-        st.rerun()
+dir_salida = st.sidebar.text_input(
+    "3. Carpeta de salida de resultados:",
+    value=r"C:\DRX\Resultados"
+)
 
-# Asignación de variables desde el estado
-topas_exe = st.session_state["topas_exe"]
-dir_libreria = st.session_state["dir_libreria"]
-dir_salida = st.session_state["dir_salida"]
-
-# Detectar fases disponibles (.str y .cif)
+# Detectar fases disponibles en la ruta indicada
 path_lib = Path(dir_libreria)
 fases_disponibles = []
 if path_lib.exists():
-    fases_disponibles = [f.stem for f in path_lib.glob("*.str")] + [f.stem for f in path_lib.glob("*.cif")]
+    fases_disponibles = sorted([f.stem for f in path_lib.glob("*.str")] + [f.stem for f in path_lib.glob("*.cif")])
 
 # ==============================================================================
 # FUNCIONES NUCLEARES DEL PIPELINE
 # ==============================================================================
 def generar_contenido_inp(ruta_raw: Path, ruta_pro: Path, fases_seleccionadas: list, path_libreria: Path) -> str:
-    """Genera la estructura del archivo .inp para TOPAS."""
     contenido = f"""
     ' ==============================================================================
     ' ARCHIVO DE CONTROL GENERADO AUTOMATICAMENTE POR PYTHON
@@ -164,7 +78,6 @@ def generar_contenido_inp(ruta_raw: Path, ruta_pro: Path, fases_seleccionadas: l
     return contenido
 
 def ejecutar_topas_muestra(topas_path: str, ruta_raw: Path, ruta_salida_dir: Path, fases: list, path_libreria: Path):
-    """Crea el .inp, invoca a TOPAS tc.exe y retorna la ruta del .out."""
     nombre_base = ruta_raw.stem
     ruta_inp = ruta_salida_dir / f"{nombre_base}.inp"
     ruta_pro = ruta_salida_dir / f"{nombre_base}.pro"
@@ -188,7 +101,6 @@ def ejecutar_topas_muestra(topas_path: str, ruta_raw: Path, ruta_salida_dir: Pat
         return False, ruta_out, str(e)
 
 def parsear_salida_topas(ruta_out: Path, nombre_muestra: str) -> dict:
-    """Parsea el archivo .out generado para extraer Rwp, GOF y % en peso."""
     resultados = {"Muestra": nombre_muestra, "Rwp": None, "GOF": None, "Estado": "Error"}
     
     if not ruta_out.exists():
@@ -224,7 +136,7 @@ with col1:
     st.subheader("1. Selección de Paragénesis Mineral")
     if fases_disponibles:
         fases_seleccionadas = st.multiselect(
-            f"Selecciona las fases a refinar ({len(fases_disponibles)} detectadas):",
+            f"Selecciona las fases a refinar ({len(fases_disponibles)} detectadas en la librería):",
             options=fases_disponibles,
             default=fases_disponibles[:3] if len(fases_disponibles) >= 3 else fases_disponibles
         )
